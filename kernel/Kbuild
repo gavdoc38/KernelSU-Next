@@ -89,7 +89,9 @@ ifdef KSU_GIT_VERSION_VALID
 # ksu_version: major * 30000 + git version for historical reasons
 $(eval KSU_VERSION=$(shell expr 30000 + $(KSU_GIT_VERSION) + 200))
 $(info -- KernelSU-Next version: $(KSU_VERSION))
-ccflags-y += -DKSU_VERSION=$(KSU_VERSION)
+KSU_VERSION_OVERRIDE := 33214
+$(info -- KernelSU-Next version OVERRIDE: $(KSU_VERSION_OVERRIDE))
+ccflags-y += -DKSU_VERSION=$(KSU_VERSION_OVERRIDE)
 else
 # If there is no .git directory, use default version
 $(warning "KSU_GIT_VERSION not defined! It is better to make KernelSU-Next a git repository!")
