@@ -6,7 +6,7 @@
  *  While what we are doing here is kinda improper, for most cases
  *  this should be mroe than enough.
  *
- *  this will include write_op / selinux_transaction_write spoofing and then avc spoofing.
+ *  this will include write_op / selinux_transaction_write spoofing.
  *  our goal for this one is to be self contained as much as possible
  *  with only one call from ksu's initcall.
  *
@@ -23,42 +23,6 @@
 #include "selinux_hide.h"
  // enabled by default
 static bool ksu_selinux_hide_enabled __read_mostly = true;
-
-// sids for avc spoofing
-static u32 ksu_sid __read_mostly = 0;
-static u32 priv_app_sid __read_mostly = 0;
-
-static inline int ksu_selinux_get_sids()
-{
-	int err;
-
-	err = security_secctx_to_secid("u:r:ksu:s0", strlen("u:r:ksu:s0"), &ksu_sid);
-	if (!err)
-		pr_info("selinux_hide: ksu_sid: %u\n", ksu_sid);
-
-	err = security_secctx_to_secid("u:r:priv_app:s0:c512,c768", strlen("u:r:priv_app:s0:c512,c768"), &priv_app_sid);
-	if (!err)
-		pr_info("selinux_hide: priv_app_sid: %u\n", priv_app_sid);
-
-	if (!ksu_sid || !priv_app_sid)
-		return -1;
-
-	return 0;
-}
-
-void ksu_slow_avc_audit(u32 *tsid)
-{
-	if (unlikely(!ksu_selinux_hide_enabled))
-		return;
-
-	if (*tsid != ksu_sid)
-		return;
-
-	pr_info("selinux_hide: slow_avc_audit: replace tsid: %u with priv_app_sid: %u\n", *tsid, priv_app_sid);
-	*tsid = priv_app_sid;
-
-	return;
-}
 
 static inline bool ksu_should_destroy_context(char *str)
 {
@@ -108,42 +72,6 @@ out_unlock:
 
 }
 
-#if 0
-static inline bool ksu_should_destroy_context(char *str)
-{
-	if (!str)
-		return false;
-
-	down_read(&ksu_sepolicy_shitlist_lock);
-
-	struct ksu_type_node *t_node;
-	list_for_each_entry(t_node, &ksu_hide_type_list, list) {
-		if (strstr(str, t_node->padded_name)) {
-			up_read(&ksu_sepolicy_shitlist_lock);
-			return true;
-		}
-	}
-
-	// double strstr
-	char *str2 = strchr(str, ' ');
-	if (!str2) {
-		up_read(&ksu_sepolicy_shitlist_lock);
-		return false;
-	}		
-
-	struct ksu_rule_node *r_node;
-	list_for_each_entry(r_node, &ksu_hide_rule_list, list) {
-		if (strstr(str, r_node->src) && strstr(str2, r_node->tgt)) {
-			up_read(&ksu_sepolicy_shitlist_lock);
-			return true;
-		}
-	}
-
-	up_read(&ksu_sepolicy_shitlist_lock);
-	return false;
-}
-#endif
-
 // NOTE: this is also available as manual hook for 6.8+
 int ksu_hide_setprocattr(const char *name, void *value, size_t size)
 {
@@ -187,84 +115,14 @@ int ksu_hide_setprocattr(const char *name, void *value, size_t size)
 	return 0;
 }
 
-// for manual hook, remove this in a month
-void ksu_sel_write_context(struct file **file, char **buf, size_t *size)
-{
-	return;
-}
-
-#if defined(CONFIG_KPROBES)
-
-#include <linux/kprobes.h>
-static struct kprobe *slow_avc_audit_kp;
-
-static int slow_avc_audit_pre_handler(struct kprobe *p, struct pt_regs *regs)
-{
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0) && defined(KSU_COMPAT_USE_SELINUX_STATE)
-	u32 *tsid = (u32 *)&PT_REGS_PARM3(regs);
-#else
-	u32 *tsid = (u32 *)&PT_REGS_PARM2(regs);
-#endif
-
-	ksu_slow_avc_audit(tsid);
-
-	return 0;
-}
-
-// copied from upstream
-static struct kprobe *init_kprobe(const char *name, kprobe_pre_handler_t handler)
-{
-	struct kprobe *kp = kzalloc(sizeof(struct kprobe), GFP_KERNEL);
-	if (!kp)
-		return NULL;
-	kp->symbol_name = name;
-	kp->pre_handler = handler;
-
-	int ret = register_kprobe(kp);
-	pr_info("%s: register %s kprobe: %d\n", __func__, name, ret);
-	if (ret) {
-		kfree(kp);
-		return NULL;
-	}
-
-	return kp;
-}
-static void destroy_kprobe(struct kprobe **kp_ptr)
-{
-	struct kprobe *kp = *kp_ptr;
-	if (!kp)
-		return;
-	unregister_kprobe(kp);
-	synchronize_rcu();
-	kfree(kp);
-	*kp_ptr = NULL;
-}
-#endif // CONFIG_KPROBES
-
-
 static void ksu_selinux_hide_enable() 
 {
-	int ret = ksu_selinux_get_sids();
-	if (ret)
-		pr_info("selinux_hide: sid grab fail?\n");
-
-#if defined(CONFIG_KPROBES)
-	slow_avc_audit_kp = init_kprobe("slow_avc_audit", slow_avc_audit_pre_handler);
-#endif
-
 	ksu_selinux_hide_enabled = true;
 }
 
 static void ksu_selinux_hide_disable()
 {
-#if defined(CONFIG_KPROBES)
-	pr_info("selinux_hide: unregister slow_avc_audit kprobe!\n");
-	destroy_kprobe(&slow_avc_audit_kp);
-#endif
-
 	pr_info("selinux_hide: closing down hooks!\n");
-
 	ksu_selinux_hide_enabled = false;
 }
 
